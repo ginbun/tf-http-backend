@@ -5,5 +5,5 @@ Flask-MySQL>=1.5.2
 Flask-MySQLdb>=2.0.0
 mysqlclient>=2.2.1
 mysql-connector-python >=8.2.0
-pyoomysql>=0.2.15
+python-dotenv>=1.0.0
 SQLAlchemy>=2.0.23

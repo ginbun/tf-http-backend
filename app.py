@@ -5,6 +5,7 @@ from werkzeug.exceptions import HTTPException, Locked
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import logging
+import os
 
 ### LOGGING ###
 # Format and Get root logger
@@ -34,7 +35,33 @@ app = Flask(__name__)
 
 ### DATABASE ###
 # Read config file
-config = load_config_file(path=args.config_file)
+if os.path.exists(args.config_file):
+    config = load_config_file(path=args.config_file)
+else:
+    errored = False
+    env_list = ["TFSTATES_DB_HOST","TFSTATES_DB_PORT","TFSTATES_DB_SCHEMA","TFSTATES_DB_USER","TFSTATES_DB_PSWD","TFSTATES_FLASK_DEBUG","TFSTATES_FLASK_LISTEN_ADDRESS","TFSTATES_FLASK_PORT"]
+    for item in env_list:
+        if item not in os.environ.keys():
+            logger.critical(f"Please make sure to set the environment variable {item} if you're not using the --config-file option to run the API")
+            errored = True
+    if errored:
+        exit(1)
+
+    config = {
+        "database": {
+            "host": os.environ["TFSTATES_DB_HOST"],
+            "port": os.environ["TFSTATES_DB_PORT"],
+            "schema": os.environ["TFSTATES_DB_SCHEMA"],
+            "user": os.environ["TFSTATES_DB_USER"],
+            "pswd": os.environ["TFSTATES_DB_PSWD"]
+        },
+        "flask": {
+            "debug": os.environ["TFSTATES_FLASK_DEBUG"],
+            "address": os.environ["TFSTATES_FLASK_LISTEN_ADDRESS"],
+            "port": os.environ["TFSTATES_FLASK_PORT"]
+        }
+    }
+
 # Connect to DB
 # logger.debug(f"mysql+mysqlconnector://{config['database']['user']}:{config['database']['pswd']}@{config['database']['host']}:{config['database']['port']}/{config['database']['schema']}")
 app.config["SQLALCHEMY_DATABASE_URI"] = f"mysql+mysqlconnector://{config['database']['user']}:{config['database']['pswd']}@{config['database']['host']}:{config['database']['port']}/{config['database']['schema']}"
@@ -62,10 +89,6 @@ class LockedState(db.Model):
         return (self.name)
     
 ### EXCEPTIONS ###
-# class StateLockedException(HTTPException):
-#     title = "Locked TFState"
-#     code = 423
-#     description = 'TFState is in locked state.'
 
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -78,13 +101,9 @@ def handle_exception(e):
            'errorMessage': "Something went really wrong!"}
     res['errorMessage'] = e.message if hasattr(e, 'message') else f'{e}'
     return jsonify(res), 500
-# app.register_error_handler(StateLockedException, handle_exception)
 
 
 ### API ###
-# Set base path
-# app.config["APPLICATION_ROOT"] = "/tf-http/api/v1"
-
 
 ### API Paths ###
 @app.route("/tfstates/all", methods=["GET"])
@@ -141,20 +160,15 @@ def update_tfstate(name):
 @app.route("/tfstates/<name>", methods=["LOCK"])
 def lock_tfstate(name):
     logger.debug("Trying to find the state first")
-    query = db.session.query(TFState).filter_by(name = name)
-    state = query.one_or_none()
-    if state is None:
-        return ("Non-existent state", 404)
+    locked_state = db.session.query(LockedState).get(name)
+    if locked_state is None:
+        locked_state = LockedState()
+        locked_state.name = name
+        db.session.add(locked_state)
+        db.session.commit()
+        return ("State locked", 200)
     else:
-        locked_state = db.session.query(LockedState).get(name)
-        if locked_state is None:
-            locked_state = LockedState()
-            locked_state.name = name
-            db.session.add(locked_state)
-            db.session.commit()
-            return ("State locked", 200)
-        else:
-            return ("State already locked", 423)
+        return ("State already locked", 423)
 
 @app.route("/tfstates/<name>", methods=["UNLOCK"])
 def unlock_tfstate(name):    

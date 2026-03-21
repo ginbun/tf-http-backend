@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: tf-http-pg-db
+    environment:
+      POSTGRES_DB: tf_backend
+      POSTGRES_USER: tf_backend
+      POSTGRES_PASSWORD: tf_backend
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tf_backend -d tf_backend"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tf-http-pg-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://tf_backend:tf_backend@postgres:5432/tf_backend
+      LISTEN_ADDR: 0.0.0.0:8080
+      DB_MAX_CONNECTIONS: 20
+      RUST_LOG: tf_http_pg_backend=info,info
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pg_data:

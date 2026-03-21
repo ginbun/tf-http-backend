@@ -1,15 +1,22 @@
-FROM ubuntu:22.04
-
-RUN apt-get update -y
-RUN apt-get install -y python3 python3-pip python3-dev default-libmysqlclient-dev build-essential pkg-config
+FROM rust:1.86-bookworm AS builder
 
 WORKDIR /app
+COPY Cargo.toml Cargo.toml
+COPY Cargo.lock Cargo.lock
+COPY src src
 
-COPY ./requirements.txt /app/requirements.txt
-COPY ./.flaskenv /app/.flaskenv
-COPY ./app.py /app/app.py
-COPY ./db_init.sql /app/db_init.sql
+RUN cargo build --release
 
-RUN python3 -m pip install setuptools pip --upgrade
-RUN python3 -m pip install -r requirements.txt
-CMD ["python3", "app.py", "--config", "config.ini"]
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/tf-http-pg-backend /usr/local/bin/tf-http-pg-backend
+
+ENV LISTEN_ADDR=0.0.0.0:8080
+EXPOSE 8080
+
+CMD ["tf-http-pg-backend"]

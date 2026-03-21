@@ -1,65 +1,139 @@
-# Terraform HTTP MySQL Backend
+# Terraform/OpenTofu HTTP State Backend (Rust + Postgres)
 
-## Pre-requisites
+Production-oriented HTTP state backend compatible with Terraform/OpenTofu `backend "http"`.
 
-This project is developed using Python 3.10
+## Quick Start (Docker Compose)
 
-Install required Linux Libraries
-
-```shell
-sudo apt-get install python3-dev default-libmysqlclient-dev build-essential pkg-config
+```bash
+docker compose up --build -d
+docker compose logs -f backend
 ```
 
-```shell
-sudo yum install python3-devel mysql-devel pkgconfig
+Backend URL: `http://127.0.0.1:8080`
+
+Stop services:
+
+```bash
+docker compose down
 ```
 
-Install required Python libraries
+Stop and remove database volume:
 
-```shell
-python3 -m pip install -r requirements.txt
+```bash
+docker compose down -v
 ```
 
-## How to run the Backend
+## Features
 
-### Cloning the git repo
+- Full HTTP backend state API behavior (`GET`, update, `DELETE`, `LOCK`, `UNLOCK`).
+- PostgreSQL persistence (`JSONB` state and lock metadata).
+- Lock-safe writes using the `?ID=<lock-id>` query parameter.
+- Optional HTTP Basic Auth.
+- Async Rust implementation with `axum` + `sqlx`.
 
-```shell
-git clone https://gitlab.com/silvarion/python/flask/tf-http-mysql-backend.git
+## Compatibility
+
+This service is designed for Terraform/OpenTofu HTTP backend semantics:
+
+- Read state via `GET`.
+- Update state via `POST` (also accepts `PUT`/`PATCH`).
+- Purge state via `DELETE`.
+- Lock with `LOCK`, unlock with `UNLOCK`.
+- Lock contention returns `423 Locked` with current lock body.
+- Lock mismatch on unlock returns `409 Conflict` with current lock body.
+
+## Endpoint Behavior
+
+- `GET /state/<name>`: return current state, or `404` if missing.
+- `POST /state/<name>`: write state JSON.
+- `DELETE /state/<name>`: purge state.
+- `LOCK /state/<name>`: acquire lock using JSON lock payload.
+- `UNLOCK /state/<name>`: release lock using JSON lock payload.
+- Writes/deletes under lock require `?ID=<lock-id>` query parameter.
+
+## Configuration
+
+Required:
+
+- `DATABASE_URL` (example: `postgres://tf_backend:secret@localhost:5432/tf_backend`)
+
+Optional:
+
+- `LISTEN_ADDR` (default: `0.0.0.0:8080`)
+- `DB_MAX_CONNECTIONS` (default: `20`)
+- `RUST_LOG` (default: `tf_http_pg_backend=info,info`)
+- `HTTP_BASIC_USERNAME`
+- `HTTP_BASIC_PASSWORD`
+
+If either basic auth variable is set, both must be set.
+
+See `.env.example` for a complete local template.
+
+## Local Run
+
+```bash
+cargo run
 ```
 
-Once you have cloned the repo, copy the `config_example.ini` file to a `config.ini` file and fill the parameters with real values.
+Example:
 
-Alternatively you can create an environment file with the following variables:
-
-```shell
-# DATABASE CONFIG
-TFSTATES_DB_HOST="somehost.domain"
-TFSTATES_DB_PORT=1234
-TFSTATES_DB_SCHEMA="someschema"
-TFSTATES_DB_USER="someuser"
-TFSTATES_DB_PSWD="somepassword"
-# FLASK CONFIG
-TFSTATES_FLASK_DEBUG="false"
-TFSTATES_FLASK_LISTEN_ADDRESS="0.0.0.0"
-TFSTATES_FLASK_PORT="5000"
-
+```bash
+export DATABASE_URL="postgres://tf_backend:secret@localhost:5432/tf_backend"
+export LISTEN_ADDR="0.0.0.0:8080"
+cargo run
 ```
 
-```ini
-[database]
-host    = databasehost.localdomain
-port    = 3306
-schema  = tf_backend
-user    = tf_user
-pswd    = super_secret_1234!
+## Docker
 
-[flask]
-debug   = True
-address = "0.0.0.0"
-port    = 8081
+```bash
+docker build -t tf-http-pg-backend .
+docker run --rm -p 8080:8080 -e DATABASE_URL="postgres://tf_backend:secret@postgres:5432/tf_backend" tf-http-pg-backend
 ```
 
-### Run with Docker
+## Docker Compose
 
-```docker run -d --env-file .env jsanchezd/tf_httpmysql_backend```
+`docker-compose.yml` runs PostgreSQL and backend together.
+
+```bash
+docker compose up --build -d
+```
+
+## OpenTofu/Terraform Backend Example
+
+```hcl
+terraform {
+  backend "http" {
+    address        = "http://127.0.0.1:8080/state/prod"
+    lock_address   = "http://127.0.0.1:8080/state/prod"
+    unlock_address = "http://127.0.0.1:8080/state/prod"
+  }
+}
+```
+
+You can also split lock/unlock endpoints if needed by setting different URLs.
+
+Run initialization:
+
+```bash
+tofu init
+```
+
+## Development
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+Run a single test:
+
+```bash
+cargo test lock_then_write_without_id_returns_423 -- --exact
+```
+
+## Notes
+
+- The server uses request path as the state resource key.
+- Tables are auto-created on startup.
+- Previous Python/MySQL implementation was removed by design for this Rust/Postgres rewrite.

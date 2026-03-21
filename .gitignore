@@ -1,9 +1,4 @@
-# Python Special files
-**/.venv
-**/__pycache__
+target/
 
-# Actual configuration files
-**/config.ini
-
-# Other config files
+# Local environment files
 **/.env

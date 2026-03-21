@@ -1,4 +1,4 @@
-FROM rust:stable-bookworm AS builder
+FROM rust:1.94-slim-trixie AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.toml

@@ -69,6 +69,40 @@ If either basic auth variable is set, both must be set.
 
 See `.env.example` for a complete local template.
 
+## Authentication
+
+This backend supports optional HTTP Basic Auth.
+
+- Disabled by default: if `HTTP_BASIC_USERNAME` and `HTTP_BASIC_PASSWORD` are both unset.
+- Enabled when both are set.
+- If only one is set, the service fails on startup.
+
+Enable auth:
+
+```bash
+export HTTP_BASIC_USERNAME="tofu"
+export HTTP_BASIC_PASSWORD="change-me"
+```
+
+Use with OpenTofu/Terraform HTTP backend:
+
+```hcl
+terraform {
+  backend "http" {
+    address        = "http://127.0.0.1:8080/state/prod"
+    lock_address   = "http://127.0.0.1:8080/state/prod"
+    unlock_address = "http://127.0.0.1:8080/state/prod"
+    username       = "tofu"
+    password       = "change-me"
+  }
+}
+```
+
+You can also provide credentials via environment variables:
+
+- `TF_HTTP_USERNAME`
+- `TF_HTTP_PASSWORD`
+
 ## Local Run
 
 ```bash

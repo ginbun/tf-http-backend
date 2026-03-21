@@ -17,9 +17,8 @@ services:
       retries: 10
 
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-ghcr.io/ginbun/tf-http-backend:latest}
+    pull_policy: always
     container_name: tf-http-pg-backend
     depends_on:
       postgres:

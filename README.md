@@ -92,10 +92,22 @@ docker run --rm -p 8080:8080 -e DATABASE_URL="postgres://tf_backend:secret@postg
 
 ## Docker Compose
 
-`docker-compose.yml` runs PostgreSQL and backend together.
+`docker-compose.yml` runs PostgreSQL and backend together, and pulls backend image from GHCR (no local build).
+
+Set image (recommended):
 
 ```bash
-docker compose up --build -d
+export BACKEND_IMAGE="ghcr.io/<owner>/<repo>:latest"
+```
+
+For this repository:
+
+```bash
+export BACKEND_IMAGE="ghcr.io/ginbun/tf-http-backend:latest"
+```
+
+```bash
+docker compose up -d
 ```
 
 ## OpenTofu/Terraform Backend Example

@@ -172,33 +172,45 @@ impl StateStore for PgStore {
         key: &str,
         expected_lock_id: Option<&str>,
     ) -> Result<ReleaseLockResult, StoreError> {
-        let current = sqlx::query_scalar::<_, Value>(
-            "SELECT lock_info FROM tf_http_locks WHERE resource_key = $1",
+        if let Some(expected_id) = expected_lock_id {
+            let deleted = sqlx::query_scalar::<_, Value>(
+                "DELETE FROM tf_http_locks
+                 WHERE resource_key = $1 AND lock_id = $2
+                 RETURNING lock_info",
+            )
+            .bind(key)
+            .bind(expected_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if deleted.is_some() {
+                return Ok(ReleaseLockResult::Released);
+            }
+
+            let current = sqlx::query_scalar::<_, Value>(
+                "SELECT lock_info FROM tf_http_locks WHERE resource_key = $1",
+            )
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            return match current {
+                Some(current_lock) => Ok(ReleaseLockResult::LockMismatch(current_lock)),
+                None => Ok(ReleaseLockResult::NotLocked),
+            };
+        }
+
+        let deleted = sqlx::query_scalar::<_, Value>(
+            "DELETE FROM tf_http_locks WHERE resource_key = $1 RETURNING lock_info",
         )
         .bind(key)
         .fetch_optional(&self.pool)
         .await?;
 
-        let Some(current_lock) = current else {
-            return Ok(ReleaseLockResult::NotLocked);
-        };
-
-        if let Some(expected_id) = expected_lock_id {
-            let current_id = current_lock
-                .get("ID")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if current_id != expected_id {
-                return Ok(ReleaseLockResult::LockMismatch(current_lock));
-            }
-        }
-
-        sqlx::query("DELETE FROM tf_http_locks WHERE resource_key = $1")
-            .bind(key)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(ReleaseLockResult::Released)
+        Ok(match deleted {
+            Some(_) => ReleaseLockResult::Released,
+            None => ReleaseLockResult::NotLocked,
+        })
     }
 }
 

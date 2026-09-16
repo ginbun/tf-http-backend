@@ -133,12 +133,11 @@ async fn ensure_lock_allows_write(
     resource_key: &str,
     lock_id: Option<&str>,
 ) -> Option<Response> {
-    let current_lock = app_state
-        .store
-        .get_lock(resource_key)
-        .await
-        .ok()
-        .flatten()?;
+    let current_lock = match app_state.store.get_lock(resource_key).await {
+        Ok(current_lock) => current_lock,
+        Err(_) => return Some(internal_error_response()),
+    };
+    let current_lock = current_lock?;
     let current_id = current_lock
         .get("ID")
         .and_then(Value::as_str)
@@ -217,7 +216,7 @@ mod tests {
     use std::sync::Arc;
 
     use axum::{
-        body::Body,
+        body::{to_bytes, Body},
         http::{Method, Request, StatusCode},
     };
     use serde_json::json;
@@ -225,7 +224,7 @@ mod tests {
 
     use crate::{
         app::{build_router, AppState},
-        store::InMemoryStore,
+        store::{AcquireLockResult, InMemoryStore, ReleaseLockResult, StateStore, StoreError},
     };
 
     #[tokio::test]
@@ -307,5 +306,185 @@ mod tests {
             .unwrap();
         let read_response = app.oneshot(read_request).await.unwrap();
         assert_eq!(read_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn state_round_trip_then_delete_returns_404() {
+        let app = build_router(AppState {
+            store: Arc::new(InMemoryStore::new()),
+            basic_auth: None,
+        });
+
+        let write_request = Request::builder()
+            .uri("/state/smoke")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"version":4,"serial":7}).to_string()))
+            .unwrap();
+        let write_response = app.clone().oneshot(write_request).await.unwrap();
+        assert_eq!(write_response.status(), StatusCode::OK);
+
+        let read_request = Request::builder()
+            .uri("/state/smoke")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let read_response = app.clone().oneshot(read_request).await.unwrap();
+        assert_eq!(read_response.status(), StatusCode::OK);
+        let read_body = to_bytes(read_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let read_json: serde_json::Value = serde_json::from_slice(&read_body).unwrap();
+        assert_eq!(read_json, json!({"version": 4, "serial": 7}));
+
+        let delete_request = Request::builder()
+            .uri("/state/smoke")
+            .method("DELETE")
+            .body(Body::empty())
+            .unwrap();
+        let delete_response = app.clone().oneshot(delete_request).await.unwrap();
+        assert_eq!(delete_response.status(), StatusCode::OK);
+
+        let read_after_delete_request = Request::builder()
+            .uri("/state/smoke")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let read_after_delete_response = app.oneshot(read_after_delete_request).await.unwrap();
+        assert_eq!(read_after_delete_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    struct GetLockErrorStore {
+        upserted: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StateStore for GetLockErrorStore {
+        async fn get_state(&self, _key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+            Ok(None)
+        }
+
+        async fn upsert_state(
+            &self,
+            _key: &str,
+            _state: &serde_json::Value,
+        ) -> Result<(), StoreError> {
+            self.upserted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn delete_state(&self, _key: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        async fn get_lock(&self, _key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+            Err(StoreError::Db(sqlx::Error::Protocol(
+                "injected get_lock failure".into(),
+            )))
+        }
+
+        async fn acquire_lock(
+            &self,
+            _key: &str,
+            _lock_info: &serde_json::Value,
+        ) -> Result<AcquireLockResult, StoreError> {
+            Ok(AcquireLockResult::Acquired)
+        }
+
+        async fn release_lock(
+            &self,
+            _key: &str,
+            _expected_lock_id: Option<&str>,
+        ) -> Result<ReleaseLockResult, StoreError> {
+            Ok(ReleaseLockResult::NotLocked)
+        }
+    }
+
+    #[tokio::test]
+    async fn write_returns_500_when_lock_lookup_fails() {
+        let store = Arc::new(GetLockErrorStore {
+            upserted: std::sync::atomic::AtomicBool::new(false),
+        });
+        let app = build_router(AppState {
+            store: store.clone(),
+            basic_auth: None,
+        });
+
+        let write_request = Request::builder()
+            .uri("/state/demo")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"version":4}).to_string()))
+            .unwrap();
+        let write_response = app.oneshot(write_request).await.unwrap();
+        assert_eq!(write_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!store.upserted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn unlock_with_matching_id_releases_lock() {
+        let app = build_router(AppState {
+            store: Arc::new(InMemoryStore::new()),
+            basic_auth: None,
+        });
+
+        let lock_request = Request::builder()
+            .uri("/state/demo")
+            .method(Method::from_bytes(b"LOCK").unwrap())
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ID":"lock-3"}).to_string()))
+            .unwrap();
+        let lock_response = app.clone().oneshot(lock_request).await.unwrap();
+        assert_eq!(lock_response.status(), StatusCode::OK);
+
+        let unlock_request = Request::builder()
+            .uri("/state/demo")
+            .method(Method::from_bytes(b"UNLOCK").unwrap())
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ID":"lock-3"}).to_string()))
+            .unwrap();
+        let unlock_response = app.clone().oneshot(unlock_request).await.unwrap();
+        assert_eq!(unlock_response.status(), StatusCode::OK);
+
+        let write_request = Request::builder()
+            .uri("/state/demo")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"version":4}).to_string()))
+            .unwrap();
+        let write_response = app.oneshot(write_request).await.unwrap();
+        assert_eq!(write_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn unlock_with_mismatched_id_returns_409() {
+        let app = build_router(AppState {
+            store: Arc::new(InMemoryStore::new()),
+            basic_auth: None,
+        });
+
+        let lock_request = Request::builder()
+            .uri("/state/demo")
+            .method(Method::from_bytes(b"LOCK").unwrap())
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ID":"lock-4"}).to_string()))
+            .unwrap();
+        let lock_response = app.clone().oneshot(lock_request).await.unwrap();
+        assert_eq!(lock_response.status(), StatusCode::OK);
+
+        let unlock_request = Request::builder()
+            .uri("/state/demo")
+            .method(Method::from_bytes(b"UNLOCK").unwrap())
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ID":"other"}).to_string()))
+            .unwrap();
+        let unlock_response = app.oneshot(unlock_request).await.unwrap();
+        assert_eq!(unlock_response.status(), StatusCode::CONFLICT);
+        let unlock_body = to_bytes(unlock_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let unlock_json: serde_json::Value = serde_json::from_slice(&unlock_body).unwrap();
+        assert_eq!(unlock_json, json!({"ID":"lock-4"}));
     }
 }
